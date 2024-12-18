@@ -252,3 +252,12 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+# python evaluate_models.py \
+#     --coco-path /path/to/coco \
+#     --num-images 200 \
+#     --weights-dir /path/to/weights \
+#     --batch-size 1 \
+#     --num-runs 50
