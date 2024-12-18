@@ -12,6 +12,9 @@ from pycocotools.cocoeval import COCOeval
 import json
 import torchvision.transforms as transforms
 import random
+import warnings
+
+warnings.filterwarnings("ignore")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -57,62 +60,47 @@ class ModelEvaluator:
         try:
             if 'yolov5' in model_name:
                 model = torch.hub.load('ultralytics/yolov5', 'custom', path=str(weight_path))
-            elif 'yolov8' in model_name:
-                from ultralytics import YOLO
-                model = YOLO(str(weight_path))
-            elif any(x in model_name for x in ['yolo9', 'yolo10', 'yolo11']):
-                from ultralytics import YOLO
-                model = YOLO(str(weight_path))
+                return model.to(self.device)
             else:
-                logger.error(f"Unsupported YOLO version: {model_name}")
-                return None
+                try:
+                    from ultralytics import YOLO
+                except ImportError:
+                    logger.info("Installing ultralytics package...")
+                    import subprocess
+                    subprocess.check_call(["pip", "install", "ultralytics"])
+                    from ultralytics import YOLO
                 
-            return model.to(self.device)
-        except Exception as e:
-            logger.error(f"Error loading {model_name}: {str(e)}")
-            return None
-            
-    def load_yolox_model(self, model_name: str, weight_path: Path) -> Optional[torch.nn.Module]:
-        """Load YOLOX models"""
-        try:
-            if 'nano' in model_name:
-                from yolox.exp import get_exp
-                exp = get_exp('yolox-nano')
-            elif 'tiny' in model_name:
-                from yolox.exp import get_exp
-                exp = get_exp('yolox-tiny')
-            else:
-                logger.error(f"Unsupported YOLOX variant: {model_name}")
-                return None
+                model = YOLO(str(weight_path))
+                return model
                 
-            model = exp.get_model()
-            ckpt = torch.load(str(weight_path), map_location=self.device)
-            model.load_state_dict(ckpt['model'])
-            model.to(self.device)
-            model.eval()
-            return model
         except Exception as e:
             logger.error(f"Error loading {model_name}: {str(e)}")
             return None
 
     def load_all_models(self):
         """Load all available models from weights directory"""
-        weight_files = list(self.weights_dir.glob('*.pt')) + list(self.weights_dir.glob('*.pth'))
+        weight_files = list(self.weights_dir.glob('*.pt'))
         
+        logger.info(f"\nFound {len(weight_files)} model files:")
+        for f in weight_files:
+            logger.info(f"- {f.name}")
+        
+        logger.info("\nLoading models...")
         for weight_path in weight_files:
             model_name = weight_path.stem
-            logger.info(f"Loading {model_name}...")
+            logger.info(f"\nAttempting to load {model_name}...")
             
-            if 'yolox' in model_name.lower():
-                model = self.load_yolox_model(model_name, weight_path)
-            else:
+            try:
                 model = self.load_yolo_model(model_name, weight_path)
-                
-            if model is not None:
-                self.models[model_name] = model
-                logger.info(f"Successfully loaded {model_name}")
-            else:
-                logger.warning(f"Failed to load {model_name}")
+                    
+                if model is not None:
+                    self.models[model_name] = model
+                    logger.info(f"✓ Successfully loaded {model_name}")
+                else:
+                    logger.error(f"✗ Failed to load {model_name}: model is None")
+            except Exception as e:
+                logger.error(f"✗ Error loading {model_name}: {str(e)}")
+                logger.debug("Traceback:", exc_info=True)
 
     def preprocess_image(self, image_path: str) -> torch.Tensor:
         """Preprocess image for inference"""
@@ -120,7 +108,7 @@ class ModelEvaluator:
         return self.transform(image).unsqueeze(0)
 
     def measure_inference_time(self, model: torch.nn.Module, image: torch.Tensor, num_runs: int = 100) -> float:
-        """Measure average inference time"""
+        """Measure average inference time for YOLOv5"""
         times = []
         
         # Warmup
@@ -137,6 +125,24 @@ class ModelEvaluator:
             
         return np.mean(times)
 
+    def measure_ultralytics_inference_time(self, model, image, num_runs: int = 100) -> float:
+        """Measure inference time for Ultralytics models (YOLO8,9,10,11)"""
+        times = []
+        
+        # Warmup
+        for _ in range(10):
+            with torch.no_grad():
+                _ = model(image, verbose=False)
+        
+        # Actual measurement
+        for _ in range(num_runs):
+            start_time = time.time()
+            with torch.no_grad():
+                _ = model(image, verbose=False)
+            times.append(time.time() - start_time)
+            
+        return np.mean(times)
+
     def get_system_info(self) -> Dict[str, str]:
         """Get CPU specifications"""
         cpu_info = cpuinfo.get_cpu_info()
@@ -148,47 +154,82 @@ class ModelEvaluator:
         }
         return system_info
 
-    def evaluate_models(self, num_images: int = 100):
+    def evaluate_models(self, num_images: int = 100, num_runs: int = 100):
         """Evaluate all loaded models on COCO dataset"""
         if not self.models:
             logger.error("No models loaded. Please load models first.")
             return
-            
-        system_info = self.get_system_info()
-        logger.info("\nSystem Information:")
-        for key, value in system_info.items():
-            logger.info(f"{key}: {value}")
-            
-        logger.info("\nModel Evaluation Results:")
-        logger.info("-" * 80)
-        logger.info(f"{'Model Name':<20} {'Avg Inference Time (ms)':<20} {'FPS':<10}")
-        logger.info("-" * 80)
+        
+        # Store results for all models
+        results = {}
         
         # Get random subset of COCO images
         test_images = self.coco_handler.get_random_images(num_images)
         
+        # First collect all results
         for model_name, model in self.models.items():
+            logger.info(f"Evaluating {model_name}...")
             try:
                 total_time = 0
                 num_processed = 0
                 
                 for img_path in test_images:
-                    image = self.preprocess_image(img_path)
-                    avg_time = self.measure_inference_time(model, image)
-                    total_time += avg_time
-                    num_processed += 1
+                    try:
+                        if 'yolov5' in model_name:
+                            image = self.preprocess_image(img_path)
+                            avg_time = self.measure_inference_time(model, image, num_runs=num_runs)
+                        else:  # For YOLO 8,9,10,11
+                            img = Image.open(img_path)
+                            avg_time = self.measure_ultralytics_inference_time(model, img, num_runs=num_runs)
+                        
+                        total_time += avg_time
+                        num_processed += 1
+                        
+                    except Exception as img_error:
+                        logger.error(f"Error processing image {img_path}: {str(img_error)}")
+                        continue
                 
-                avg_inference_time = total_time / num_processed
-                fps = 1 / avg_inference_time
+                if num_processed > 0:
+                    avg_inference_time = total_time / num_processed
+                    fps = 1 / avg_inference_time
+                    
+                    results[model_name] = {
+                        'inference_time': avg_inference_time * 1000,  # Convert to ms
+                        'fps': fps,
+                        'images_processed': num_processed
+                    }
                 
-                logger.info(
-                    f"{model_name:<20} "
-                    f"{(avg_inference_time * 1000):<20.2f} "
-                    f"{fps:<10.2f}"
-                )
             except Exception as e:
                 logger.error(f"Error evaluating {model_name}: {str(e)}")
-                
+                logger.error("Stack trace:", exc_info=True)
+        
+        # Print system information
+        logger.info("\n" + "="*50)
+        logger.info("EVALUATION RESULTS")
+        logger.info("="*50)
+        
+        system_info = self.get_system_info()
+        logger.info("\nSystem Information:")
+        for key, value in system_info.items():
+            logger.info(f"{key}: {value}")
+        
+        # Print results table
+        logger.info("\nModel Performance:")
+        logger.info("-" * 80)
+        logger.info(f"{'Model Name':<20} {'Inference Time (ms)':<20} {'FPS':<15} {'Images':<10}")
+        logger.info("-" * 80)
+        
+        # Sort models by FPS for easy comparison
+        sorted_models = sorted(results.items(), key=lambda x: x[1]['fps'], reverse=True)
+        
+        for model_name, result in sorted_models:
+            logger.info(
+                f"{model_name:<20} "
+                f"{result['inference_time']:<20.2f} "
+                f"{result['fps']:<15.2f} "
+                f"{result['images_processed']:<10}"
+            )
+        
         logger.info("-" * 80)
 
 def parse_args():
@@ -247,12 +288,26 @@ def main():
     # Load all models
     evaluator.load_all_models()
     
+    # Print summary of loaded models
+    logger.info("\nSuccessfully loaded models:")
+    logger.info("-" * 40)
+    for idx, model_name in enumerate(evaluator.models.keys(), 1):
+        logger.info(f"{idx}. {model_name}")
+    logger.info("-" * 40)
+    
+    if not evaluator.models:
+        logger.error("No models were successfully loaded. Exiting...")
+        return
+    
+    # Add delay before starting evaluation
+    logger.info("\nStarting evaluation in 5 seconds...")
+    time.sleep(5)
+    
     # Run evaluation on COCO dataset
-    evaluator.evaluate_models(num_images=args.num_images)
+    evaluator.evaluate_models(num_images=args.num_images, num_runs=args.num_runs)
 
 if __name__ == "__main__":
     main()
-
 
 
 # python evaluate_models.py \
