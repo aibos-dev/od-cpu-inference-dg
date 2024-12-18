@@ -18,7 +18,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         wget git zip curl make llvm tzdata tk-dev graphviz xz-utils zlib1g-dev \
         libssl-dev libbz2-dev libffi-dev liblzma-dev libsqlite3-dev libgl1-mesa-dev \
-        libreadline-dev libncurses5-dev libncursesw5-dev build-essential nano git-lfs unzip\
+        libreadline-dev libncurses5-dev libncursesw5-dev build-essential nano git-lfs unzip cmake protobuf-compiler libprotobuf-dev pybind11-dev\
     && git lfs install \
     && rm -rf /var/lib/apt/lists/*
 
