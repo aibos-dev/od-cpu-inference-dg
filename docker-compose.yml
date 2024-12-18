@@ -1,0 +1,35 @@
+name: od-cpu-inference
+services:
+  od-cpu-inference-server:
+    container_name: od-cpu-inference-container
+    image: od-cpu-inference-image
+    runtime: nvidia
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        USERNAME: ${USERNAME:-devuser}
+        USER_UID: ${UID:-1001}
+        USER_GID: ${GID:-1001}
+        PYTHON_VERSION: 3.10.12
+        PYTHON_MAJOR: "3.10"
+    shm_size: '16gb'
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    working_dir: /workspace
+    stdin_open: true
+    tty: true
+    volumes:
+      - .:/workspace
+      - poetry-cache:/root/.cache/pypoetry
+    environment:
+      ENV: "dev"
+      TZ: "Asia/Tokyo"
+      LC_ALL: C.UTF-8
+      LANG: C.UTF-8
+      
+    command: bash
+
+volumes:
+  poetry-cache:
