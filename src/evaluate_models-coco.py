@@ -220,6 +220,7 @@ class ModelEvaluator:
                             gt_bbox[1] + gt_bbox[3]
                         ]
                         
+                        
                         # Calculate IoU
                         iou = self.calculate_iou(det_bbox, gt_bbox)
                         if iou > 0.5:
