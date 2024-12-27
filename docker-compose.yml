@@ -28,6 +28,8 @@ services:
       TZ: "Asia/Tokyo"
       LC_ALL: C.UTF-8
       LANG: C.UTF-8
+
+    # No GPU Configs (CPU Inference Only)
       
     command: bash
 

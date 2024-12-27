@@ -3,6 +3,11 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+
+#files 
+
+/sample_video/frames
+/src/results/
 # C extensions
 *.so
 
